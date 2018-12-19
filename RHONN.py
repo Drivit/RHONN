@@ -184,7 +184,7 @@ class RHONN:
             for j in range(len(self.activation_funcs)):
                 self.s_x[k, j] = self.activation_funcs[j](inputs[k, j])
             
-            # Calculating xi(k+1)
+            # Calculating network output
             if self.z_structure is not None:
                 self.Z[k] = self.calculate_z(self.s_x[k])
             else:
@@ -281,7 +281,7 @@ class RHONN:
         for n in range(len(self.activation_funcs)):
             self.s_x[n] = self.activation_funcs[n](input[n])
         
-        # Calculating xi(k+1)
+        # Calculating network output
         if self.z_structure is not None:
             self.Z = self.calculate_z(self.s_x)
         else:
@@ -323,8 +323,10 @@ class RHONN:
 
         # Ploting data
         if self.plot_data:            
+            plt.clear()
+            
             for n in range(self.out_size):
-                line = plt.plot(self.error[:, n], 
+                line = error_ax.plot(self.error[:, n], 
                                 label='State var {}'.format(n+1))
             
             plt.legend()
@@ -339,7 +341,6 @@ class RHONN:
                                    color='red')
                 plt.legend()
 
-            plt.clear()
             plt.show()
         pass
 
