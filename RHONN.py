@@ -24,18 +24,22 @@ class RHONN:
                         output_size=3 (3 states to be identified), and 5
                         elements for each Zi vector.
         z_structure - an iterable describing the structure for each vector Zi
-                      and the high order connections.
-                      e.g. using the net_structure described before. Where
-                      each tuple is a representation for: (input_index, power),
-                      and the elements in the array [(1,3), (2,1)] are taken as 
-                      a multiplication.
+                      and the high order connections. Where each tuple is a 
+                      representation for: (input_index, power), and the elements
+                      in the array [(1,3), (2,1)] are taken as a multiplication. 
+                      The index for the states (xi) starts from 1 to n and for
+                      the inputs (u) from n+1 to m.
+                      e.g. using the net_structure described before. 
                       [ [ [(1,1)], [(2,2)], [(2,1)], [(1,2)] ],  # Z1
                         [ [(1,2)], [(1,1)], [(2,4)], [(1,3)] ],  # Z2
                         [ [(1,3), (2,1)], [(1,1)], [(1,1)], [(1,1)] ] ] # Z3
         '''
         self.in_size = net_structure[0]
         self.out_size = net_structure[1]
-        self.num_z = net_structure[2]
+        if len(net_structure) == 3:
+            self.num_z = net_structure[2]
+        else:
+            self.num_z = self.in_size+self.out_size
         self.z_structure = z_structure
         self.inline_started = False
         
@@ -82,17 +86,17 @@ class RHONN:
 
         return W_1, P_1
 
-    def calculate_z(self, s_x):
+    def calculate_z(self, z_xu):
         '''
         Function to calculate the conections result on each Zi vector.
         '''
-        Z = np.ones((self.out_size, self.num_z))
+        z = np.ones((self.out_size, self.num_z))
         
-        for z in range(self.out_size):
+        for i in range(self.out_size):
             for l in range(self.num_z):
-                for index, power in self.z_structure[z][l]:
-                    Z[z, l] *= np.power(s_x[index-1], power)
-        return Z
+                for index, power in self.z_structure[i][l]:
+                    z[i, l] *= np.power(z_xu[index-1], power)
+        return z
         
     def training_params(self, 
                         activation_funcs=None, 
@@ -158,7 +162,7 @@ class RHONN:
             self.activation_funcs = [partial(self.sigmoid, betha=0.1, alpha=1) 
                                      for x in range(len(sigmoid_params))]
 
-    def offline_train(self, inputs, outputs):
+    def offline_train(self, x, u):
         '''
         Function to execute the offline training of the RHONN, with a 
         pre-defined training set.
@@ -171,40 +175,48 @@ class RHONN:
                   each element is an iterable with the result from the system 
                   at the time k with inputs[k].
         '''
+        simul_time = len(x)
+        
         # Initial values
-        self.s_x = np.zeros((len(inputs), self.in_size))
-        self.weights = np.random.rand(len(inputs), self.out_size, self.num_z)
-        self.error = np.zeros((len(inputs), self.out_size))
-        self.Z = np.random.rand(len(inputs), self.out_size, self.num_z)
-        self.X_estimated = np.zeros((len(inputs), self.out_size))
+        self.s_x = np.zeros((simul_time, self.out_size))
+        self.weights = np.random.rand(simul_time+1, self.out_size, self.num_z)
+        self.error = np.zeros((simul_time, self.out_size))
+        self.z = np.random.rand(simul_time, self.out_size, self.num_z)
+        self.x_estimated = np.random.rand(simul_time+1, self.out_size)
 
         # Training
-        for k in range(len(inputs)):
+        for k in range(simul_time):
             # Applying activation functions
             for j in range(len(self.activation_funcs)):
-                self.s_x[k, j] = self.activation_funcs[j](inputs[k, j])
+                self.s_x[k, j] = self.activation_funcs[j](x[k, j])
+            
+            if u is not None:
+                z_xu = np.concatenate((self.s_x[k], u[k]))
+            else:
+                z_xu = self.s_x[k]
             
             # Calculating network output
             if self.z_structure is not None:
-                self.Z[k] = self.calculate_z(self.s_x[k])
+                self.z[k] = self.calculate_z(z_xu)
             else:
-                self.Z[k] = np.array([self.s_x[k] for x in range(self.num_z)])
+                self.z[k] = np.array([z_xu for i in range(self.out_size)])
 
-            self.X_estimated[k] = [np.dot(self.weights[k][n].T, self.Z[k][n]) 
-                                   for n in range(self.out_size)]
+            # Calculating xi[k+1]
+            self.x_estimated[k+1] = [np.dot(self.weights[k, i].T, self.z[k, i]) 
+                                   for i in range(self.out_size)]
 
             # Calculating the error
-            self.error[k] = np.subtract(outputs[k], self.X_estimated[k])
+            self.error[k] = np.subtract(x[k], self.x_estimated[k])
             
             if self.debug:
                 print self.str_result.format(k, 
-                                             outputs[k], 
-                                             self.X_estimated[k], 
-                                             self.error[k]) #DEBUG
+                                             x[k], 
+                                             self.x_estimated[k], 
+                                             self.error[k])
 
             # Calculating the adjustment for all the array with EFK
             if self.fnc_weights_adjsmnt is None:
-                weights_res = self.EKF_weights_adjustment(self.Z[k], 
+                weights_res = self.EKF_weights_adjustment(self.z[k], 
                                                          self.weights[k], 
                                                          self.error[k])
                 estimated_weights = weights_res[0]
@@ -212,13 +224,9 @@ class RHONN:
             else:
                 estimated_weights = self.fnc_weights_adjsmnt(self.weights[k], 
                                                              self.error[k])
-            
-            
+                
             # Save the new weights    
-            if (k < len(inputs) - 1):
-                self.weights[k+1] = estimated_weights
-            else:
-                self.weights[k] = estimated_weights
+            self.weights[k+1] = estimated_weights
 
         # Ploting data
         if self.plot_data:
@@ -231,9 +239,9 @@ class RHONN:
 
             for n in range(self.out_size):
                 fig = plt.figure('State variable {}'.format(n+1))
-                line_1, = plt.plot(outputs[:, [n]], 
+                line_1, = plt.plot(x[:, n], 
                                    label='System')
-                line_2, = plt.plot(self.X_estimated[:, [n]], 
+                line_2, = plt.plot(self.x_estimated[:, n], 
                                    linestyle='--', 
                                    label='RHONN', 
                                    color='red')
@@ -255,8 +263,8 @@ class RHONN:
             self.s_x = np.zeros(self.in_size)
             self.weights = np.random.rand(self.out_size, self.num_z)
             self.error = np.zeros(self.out_size)
-            self.Z = np.random.rand(self.out_size, self.num_z)
-            self.X_estimated = np.zeros(self.out_size)
+            self.z = np.random.rand(self.out_size, self.num_z)
+            self.x_estimated = np.zeros(self.out_size)
             self.k = 0
             
             # Var to save the training history
@@ -280,32 +288,34 @@ class RHONN:
         # Applying activation functions
         for n in range(len(self.activation_funcs)):
             self.s_x[n] = self.activation_funcs[n](input[n])
+            
+        # TODO: Fix the elements in the Z vector
         
         # Calculating network output
         if self.z_structure is not None:
-            self.Z = self.calculate_z(self.s_x)
+            self.z = self.calculate_z(self.s_x)
         else:
-            self.Z = np.array([self.s_x for x in range(self.num_z)])
+            self.z = np.array([self.s_x for x in range(self.num_z)])
 
-        self.X_estimated = [np.dot(self.weights[n].T, self.Z[n]) 
+        self.x_estimated = [np.dot(self.weights[n].T, self.z[n]) 
                                for n in range(self.out_size)]
 
         # Calculating the error
-        self.error = np.subtract(output, self.X_estimated)
+        self.error = np.subtract(output, self.x_estimated)
         
         # Save results
-        self.net_outputs.append(self.X_estimated)
+        self.net_outputs.append(self.x_estimated)
         self.errors.append(self.error)
         
         if self.debug:
             print self.str_result.format(k, 
                                          output, 
-                                         self.X_estimated, 
+                                         self.x_estimated, 
                                          self.error)
 
         # Calculating the adjustment for all the array with EFK
         if self.fnc_weights_adjsmnt is None:
-            weights_res = self.EKF_weights_adjustment(self.Z, 
+            weights_res = self.EKF_weights_adjustment(self.z, 
                                                      self.weights, 
                                                      self.error)
             estimated_weights = weights_res[0]
@@ -375,20 +385,22 @@ if __name__ == '__main__':
     out_size = len(outputs[0])
     num_z = 3
 
-    Z_structure = [ [[(1, 1)], [(2, 1)], [(2, 1)]],  # Z1
-                    [[(1, 2)], [(2, 2)], [(2, 1)]],  # Z2
-                    [[(1, 3)], [(2, 1)], [(2, 2)]] ] # Z3
+    z_structure = [ [[(1, 3)], [(1, 1)], [(4, 3)]],  # Z1
+                    [[(2, 3)], [(4, 3)], [(2, 1)]],  # Z2
+                    [[(3, 1)], [(4, 1)], [(5, 11)]] ] # Z3
     
-    R = np.array([0.1, 0.01, 0.1])
+    R = np.array([1.0, 1.0, 1.0])
     P = [np.identity(num_z) for x in range(out_size)]
     Q = [np.identity(num_z) for x in range(out_size)]
-    etas = np.array([0.8, 0.8, 1.5])
+
+    etas = np.array([1.0, 1.0, 1.0])
 
     EKF_params = (R, P, Q, etas)
-    sigmoids_params = [(0.5, 1), (0.1, 1)]
+    sigmoids_params = [(0.1, 1), (0.1, 1), (0.3, 1)]
 
     # Test the RHONN identifier
-    test_rhonn = RHONN((in_size, out_size, num_z), z_structure=Z_structure)
+    test_rhonn = RHONN((in_size, out_size, num_z), z_structure=z_structure)
     test_rhonn.training_params(sigmoid_params=sigmoids_params, 
-                               EKF_parameters=EKF_params)
-    test_rhonn.offline_train(inputs, outputs)
+                               EKF_parameters=EKF_params,
+                               debug=False)
+    test_rhonn.offline_train(x=outputs, u=inputs)
